@@ -4,6 +4,20 @@ export interface Result<T> {
   data: T;
 }
 
+export class ApiError extends Error {
+  status: number;
+  code?: number;
+  payload?: unknown;
+
+  constructor(message: string, options?: { status?: number; code?: number; payload?: unknown }) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = options?.status ?? 0;
+    this.code = options?.code;
+    this.payload = options?.payload;
+  }
+}
+
 export interface HealthData {
   status: string;
   application: string;
@@ -31,10 +45,23 @@ export interface ChatSendResponse {
   model: string;
   retrievedMemories?: {
     total: number;
-    projectMemories: any[];
-    chatMemories: any[];
-    globalMemories: any[];
+    projectMemories: RetrievedMemoryHit[];
+    chatMemories: RetrievedMemoryHit[];
+    globalMemories: RetrievedMemoryHit[];
   };
+}
+
+export interface RetrievedMemoryHit {
+  id: number;
+  projectId: number;
+  chatId?: number | null;
+  scopeType: 'global' | 'project' | 'chat';
+  memoryType: 'preference' | 'profile' | 'habit' | 'requirement' | 'constraint' | 'decision' | 'summary' | 'fact';
+  title?: string | null;
+  summary: string;
+  detailText?: string | null;
+  importance?: number | null;
+  confidence?: number | null;
 }
 
 export interface MemoryRecordRequest {
@@ -57,15 +84,15 @@ export interface MemoryRecordVO {
   id: number;
   userId: number;
   projectId: number;
-  chatId: number;
-  sourceMessageEventId: number;
-  scopeType: string;
-  memoryType: string;
-  title: string;
+  chatId?: number | null;
+  sourceMessageEventId?: number | null;
+  scopeType: 'global' | 'project' | 'chat';
+  memoryType: 'preference' | 'profile' | 'habit' | 'requirement' | 'constraint' | 'decision' | 'summary' | 'fact';
+  title?: string | null;
   summary: string;
-  detailText: string;
-  importance: number;
-  confidence: number;
+  detailText?: string | null;
+  importance?: number | null;
+  confidence?: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -83,11 +110,11 @@ export interface TimelineEventVO {
   eventTime: number;
   userId: number;
   projectId: number;
-  chatId: number;
+  chatId?: number | null;
   sourceId: number;
   title: string;
   summary: string;
-  detail: string;
+  detail?: string | null;
 }
 
 export interface TimelineResponse {
@@ -108,9 +135,19 @@ export interface VectorSearchRequest {
   userId: number;
   projectId: number;
   chatId?: number;
-  scopeTypes?: string[];
+  scopeTypes?: Array<'global' | 'project' | 'chat'>;
   queryText: string;
   topK?: number;
+}
+
+export interface VectorSearchHit {
+  memoryId: number;
+  score: number;
+  scopeType: 'global' | 'project' | 'chat';
+  memoryType: 'preference' | 'profile' | 'habit' | 'requirement' | 'constraint' | 'decision' | 'summary' | 'fact';
+  title?: string | null;
+  summary: string;
+  detailText?: string | null;
 }
 
 export interface VectorSearchResponse {
@@ -119,27 +156,102 @@ export interface VectorSearchResponse {
   totalHits: number;
   projectHits: number;
   supplementalHits: number;
-  hits: any[];
+  hits: VectorSearchHit[];
 }
 
 const BASE_URL = '/api';
 
-async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE_URL}${url}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  });
-  
-  const result: Result<T> = await response.json();
-  
-  if (result.code !== 200) {
-    throw new Error(result.message || 'API Error');
+function isWrappedResult<T>(value: unknown): value is Result<T> {
+  return typeof value === 'object' && value !== null && 'code' in value && 'message' in value && 'data' in value;
+}
+
+function buildQueryString(params?: Record<string, unknown>): string {
+  if (!params) {
+    return '';
   }
-  
-  return result.data;
+
+  const searchParams = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null && item !== '') {
+          searchParams.append(key, String(item));
+        }
+      });
+      return;
+    }
+
+    searchParams.append(key, String(value));
+  });
+
+  return searchParams.toString();
+}
+
+async function readResponseBody<T>(response: Response): Promise<unknown> {
+  const contentType = response.headers.get('content-type') ?? '';
+
+  if (contentType.includes('application/json')) {
+    return response.json() as Promise<T>;
+  }
+
+  const text = await response.text();
+  return text ? { message: text } : null;
+}
+
+async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(options?.headers);
+  const hasBody = options?.body !== undefined && options.body !== null;
+  const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData;
+
+  if (hasBody && !isFormData && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${BASE_URL}${url}`, {
+      ...options,
+      headers,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Network request failed';
+    throw new ApiError(message, { payload: error });
+  }
+
+  const payload = await readResponseBody<Result<T>>(response);
+
+  if (!response.ok) {
+    const message =
+      (isWrappedResult(payload) && payload.message) ||
+      (typeof payload === 'object' && payload !== null && 'message' in payload && typeof payload.message === 'string' && payload.message) ||
+      `HTTP ${response.status} ${response.statusText}`.trim();
+
+    throw new ApiError(message, {
+      status: response.status,
+      code: isWrappedResult(payload) ? payload.code : undefined,
+      payload,
+    });
+  }
+
+  if (isWrappedResult<T>(payload)) {
+    if (payload.code !== 200) {
+      throw new ApiError(payload.message || 'API Error', {
+        status: response.status,
+        code: payload.code,
+        payload,
+      });
+    }
+
+    return payload.data;
+  }
+
+  return payload as T;
 }
 
 export const api = {
@@ -167,7 +279,7 @@ export const api = {
     }),
     get: (memoryId: number) => fetchApi<MemoryRecordVO>(`/memory-records/${memoryId}`),
     list: (params?: Record<string, any>) => {
-      const query = new URLSearchParams(params as any).toString();
+      const query = buildQueryString(params);
       return fetchApi<MemoryRecordVO[]>(`/memory-records${query ? `?${query}` : ''}`);
     },
   },

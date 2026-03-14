@@ -1,0 +1,107 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: memory-backend
+  datasource:
+    driver-class-name: org.sqlite.JDBC
+    url: jdbc:sqlite:./memory-backend.db
+    hikari:
+      pool-name: MemoryBackendHikariCP
+      minimum-idle: 1
+      maximum-pool-size: 1
+      connection-init-sql: PRAGMA foreign_keys=ON
+      connection-test-query: SELECT 1
+  jackson:
+    default-property-inclusion: non_null
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  threads:
+    virtual:
+      enabled: false
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      base-url: https://api.openai.com
+      chat:
+        options:
+          model: qwen3.5:2b
+      embedding:
+        options:
+          model: qwen3-embedding:0.6b
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: qwen3.5:2b
+      embedding:
+        options:
+          model: qwen3-embedding:0.6b
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.example.memory.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+
+logging:
+  level:
+    com.example.memory: info
+
+app:
+  chat:
+    context-message-limit: 12
+    default-system-prompt: You are a helpful assistant.
+  rag:
+    memory-top-k: 6
+    history-message-limit: 10
+    system-prompt: You are a helpful assistant. Use retrieved memories when they are relevant and stay within current project constraints.
+  vector:
+    qdrant:
+      enabled: false
+      host: localhost
+      grpc-port: 6334
+      use-tls: false
+      api-key:
+      collection-name: memory_record_vectors
+      initialize-schema: true
+      search-top-k-default: 5
+      timeout-seconds: 5
+  memory:
+    extraction:
+      recent-message-limit: 20
+  ai:
+    # Uses Spring AI ChatModel and EmbeddingModel abstractions.
+    # OpenAI uses the official API.
+    # Ollama is wired through its OpenAI-compatible endpoints.
+    chat:
+      provider: ollama
+      model: qwen2.5:7b
+      temperature: 0.2
+      max-tokens: 1024
+      # Optional per-model overrides.
+      # base-url: http://localhost:11434
+      # api-key: ollama
+      # completions-path: /v1/chat/completions
+    embedding:
+      provider: ollama
+      model: nomic-embed-text
+      # dimensions: 768
+      # base-url: http://localhost:11434
+      # api-key: ollama
+      # embeddings-path: /v1/embeddings
+    providers:
+      openai:
+        base-url: https://api.openai.com
+        api-key: ${OPENAI_API_KEY:}
+        completions-path: /v1/chat/completions
+        embeddings-path: /v1/embeddings
+      ollama:
+        base-url: http://localhost:11434
+        api-key: ollama
+        completions-path: /v1/chat/completions
+        embeddings-path: /v1/embeddings
